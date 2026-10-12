@@ -60,6 +60,11 @@ export class FloatWidget {
     const graphContainer = document.createElement('div');
     graphContainer.id = 'room-map-graph';
     graphContainer.style.cssText = 'flex: 1; position: relative;';
+    // The host drags the whole float widget on any pointerdown that bubbles to
+    // its surface handler. Cytoscape owns interactions inside the graph, so
+    // stop the event here (after Cytoscape's own canvas handlers run) without
+    // preventDefault, which would break pan/node drag.
+    graphContainer.addEventListener('pointerdown', (e) => e.stopPropagation());
     this.widget.root.appendChild(graphContainer);
 
     const visible = localStorage.getItem('room-mapper-widget-visible') !== 'false';

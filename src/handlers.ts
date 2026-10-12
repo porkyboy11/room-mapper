@@ -212,7 +212,9 @@ export class MessageHandler {
         return `${role}: ${content}`;
       });
 
-      const result = await this.scanner.scanChat(chatId, text, connectionId, userId, modelOverride);
+      // User-editable scan prompt lives in per-map settings.
+      const map = await this.storage.getCachedMap(chatId);
+      const result = await this.scanner.scanChat(chatId, text, connectionId, userId, modelOverride, map.settings.scanPrompt);
       this.spindle.sendToFrontend({
         type: 'scan_result',
         chatId,

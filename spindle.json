@@ -1,7 +1,7 @@
 {
   "identifier": "room_mapper",
   "name": "Room Mapper",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Visual environment tracking with interactive room maps and automatic context injection",
   "author": "Room Mapper Team",
   "github": "https://github.com/room-mapper/room-mapper",

@@ -6,13 +6,42 @@ const DEFAULT_TEMPLATE = `[Current Location: {{roomName}}]
 {{description}}
 Exits: {{exits}}`;
 
+// Duplicated from src/types.ts (backend and frontend are separate bundles).
+// Keep both definitions in sync.
+const DEFAULT_SCAN_PROMPT = `You are analyzing a roleplay conversation to extract location information.
+
+Review the conversation below and identify:
+1. All distinct locations/rooms mentioned
+2. A brief description of each location based on the narrative
+3. Which locations are connected (characters moved between them)
+
+Return ONLY valid JSON in this exact format, with no prose before or after:
+{
+  "rooms": [
+    {"name": "Kitchen", "description": "A modern kitchen with stainless steel appliances", "aliases": ["cook room"]},
+    {"name": "Living Room", "description": "Cozy living space with a fireplace", "aliases": []}
+  ],
+  "connections": [
+    {"from": "Kitchen", "to": "Living Room"}
+  ]
+}
+
+Conversation:
+{{conversation}}`;
+
+type TabId = 'map' | 'editor' | 'settings';
+
 export class DrawerTab {
   private tab: any;
   private currentChatId: string | null = null;
   private currentMap: any = null;
+  private activeTab: TabId = 'map';
   private settingsListenersAttached = false;
-  private templateSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private settingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private connectionSelect: any = null;
+  private editorRoomSelect: any = null;
+  private editorRoomSignature = '';
+  private editorRoomId: string | null = null;
 
   constructor(
     private ctx: SpindleFrontendContext,
@@ -34,40 +63,424 @@ export class DrawerTab {
     this.initializeUI();
   }
 
-  // ── Construction ──────────────────────────────────────────────────────────
+  // ── Shell ─────────────────────────────────────────────────────────────────
 
   private initializeUI(): void {
     this.tab.root.innerHTML = '';
 
     const container = document.createElement('div');
-    container.style.cssText = 'padding: 16px; display: flex; flex-direction: column; gap: 16px;';
+    container.style.cssText = 'padding: 12px; display: flex; flex-direction: column; gap: 12px;';
 
-    container.appendChild(this.createSettingsSection());
-    container.appendChild(this.createRoomsSection());
-    container.appendChild(this.createActionsSection());
+    container.appendChild(this.createTabBar());
+    container.appendChild(this.wrapPanel('map', this.createMapPanel()));
+    container.appendChild(this.wrapPanel('editor', this.createEditorPanel()));
+    container.appendChild(this.wrapPanel('settings', this.createSettingsPanel()));
 
     this.tab.root.appendChild(container);
+    this.setActiveTab(this.activeTab);
     this.attachSettingsListeners();
   }
 
-  private section(title: string): { section: HTMLElement; body: HTMLElement } {
-    const section = document.createElement('div');
-    const header = document.createElement('h3');
-    header.textContent = title;
-    header.style.cssText = 'margin: 0 0 12px 0; font-size: 14px; font-weight: 600;';
-    section.appendChild(header);
-    return { section, body: section };
+  private wrapPanel(tab: TabId, panel: HTMLElement): HTMLElement {
+    panel.id = `room-mapper-panel-${tab}`;
+    return panel;
   }
 
-  private createSettingsSection(): HTMLElement {
-    const { section } = this.section('Settings');
+  private createTabBar(): HTMLElement {
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display: flex; gap: 4px; border-bottom: 1px solid var(--lumiverse-border); padding-bottom: 8px;';
 
-    // Injection toggle
-    section.appendChild(
-      this.toggle('injection-enabled', 'Enable context injection', true)
-    );
+    for (const [id, label] of [
+      ['map', 'Map'],
+      ['editor', 'Editor'],
+      ['settings', 'Settings'],
+    ] as Array<[TabId, string]>) {
+      const btn = document.createElement('button');
+      btn.id = `tab-btn-${id}`;
+      btn.textContent = label;
+      btn.style.cssText =
+        'flex: 1; padding: 6px 8px; font-size: 12px; border-radius: var(--lumiverse-radius); background: transparent; border: none; color: var(--lumiverse-text-dim); cursor: pointer;';
+      btn.onclick = () => this.setActiveTab(id);
+      bar.appendChild(btn);
+    }
+    return bar;
+  }
 
-    // Injection role
+  private setActiveTab(tab: TabId): void {
+    this.activeTab = tab;
+    for (const id of ['map', 'editor', 'settings'] as TabId[]) {
+      const panel = this.q(`#room-mapper-panel-${id}`) as HTMLElement | null;
+      if (panel) panel.style.display = id === tab ? 'flex' : 'none';
+      const btn = this.q(`#tab-btn-${id}`) as HTMLElement | null;
+      if (btn) {
+        const active = id === tab;
+        btn.style.background = active ? 'var(--lumiverse-fill-subtle)' : 'transparent';
+        btn.style.color = active ? 'var(--lumiverse-text)' : 'var(--lumiverse-text-dim)';
+        btn.style.fontWeight = active ? '600' : '400';
+      }
+    }
+  }
+
+  private panel(title: string): HTMLElement {
+    const section = document.createElement('div');
+    section.style.cssText = 'display: flex; flex-direction: column; gap: 12px;';
+    const header = document.createElement('h3');
+    header.textContent = title;
+    header.style.cssText = 'margin: 0; font-size: 14px; font-weight: 600;';
+    section.appendChild(header);
+    return section;
+  }
+
+  // ── Map panel ─────────────────────────────────────────────────────────────
+
+  private createMapPanel(): HTMLElement {
+    const panel = this.panel('Map');
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display: flex; justify-content: space-between; align-items: center;';
+    const title = document.createElement('h3');
+    title.textContent = 'Rooms';
+    title.style.cssText = 'margin: 0; font-size: 14px; font-weight: 600;';
+    const addButton = document.createElement('button');
+    addButton.textContent = '+ Add Room';
+    addButton.style.cssText =
+      'padding: 4px 12px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-accent); color: white; border: none; cursor: pointer; font-size: 12px;';
+    addButton.onclick = () => this.showRoomForm(null);
+    header.append(title, addButton);
+    panel.appendChild(header);
+
+    const roomsList = document.createElement('div');
+    roomsList.id = 'rooms-list';
+    roomsList.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+    panel.appendChild(roomsList);
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display: flex; flex-wrap: wrap; gap: 8px;';
+    actions.appendChild(this.actionButton('scan-chat-btn', 'Scan Chat', () => this.handleScanChat()));
+    actions.appendChild(this.actionButton('preview-map-btn', 'Preview Map', () => this.widget.show()));
+    actions.appendChild(this.actionButton('export-map-btn', 'Export JSON', () => this.handleExport()));
+    actions.appendChild(this.actionButton('import-map-btn', 'Import JSON', () => this.handleImport()));
+    actions.appendChild(this.actionButton('manage-maps-btn', 'Manage Maps', () => this.handleManageMaps()));
+    panel.appendChild(actions);
+
+    return panel;
+  }
+
+  private actionButton(id: string, label: string, onClick: () => void): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.id = id;
+    btn.textContent = label;
+    btn.style.cssText =
+      'padding: 8px 16px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text); cursor: pointer;';
+    btn.onclick = onClick;
+    return btn;
+  }
+
+  // ── Editor panel ──────────────────────────────────────────────────────────
+
+  private createEditorPanel(): HTMLElement {
+    const panel = this.panel('Editor');
+
+    const empty = document.createElement('div');
+    empty.id = 'editor-empty';
+    empty.textContent = 'No rooms yet. Add one in the Map tab, or use Scan Chat.';
+    empty.style.cssText = 'color: var(--lumiverse-text-dim); font-size: 12px; padding: 8px 0;';
+    panel.appendChild(empty);
+
+    const body = document.createElement('div');
+    body.id = 'editor-body';
+    body.style.cssText = 'display: none; flex-direction: column; gap: 12px;';
+    panel.appendChild(body);
+
+    // Room selector
+    const selectWrap = document.createElement('div');
+    selectWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+    const selectCaption = document.createElement('span');
+    selectCaption.textContent = 'Place to edit:';
+    selectCaption.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
+    const selectSlot = document.createElement('div');
+    selectSlot.id = 'editor-room-slot';
+    selectWrap.append(selectCaption, selectSlot);
+    body.appendChild(selectWrap);
+
+    // Name / description / aliases
+    const name = this.field(body, 'Name:', 'input', 'editor-name');
+    const description = this.field(body, 'Description:', 'textarea', 'editor-description') as HTMLTextAreaElement;
+    description.rows = 3;
+    this.field(body, 'Aliases (comma-separated):', 'input', 'editor-aliases');
+
+    // Connections
+    const connWrap = document.createElement('div');
+    connWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+    const connCaption = document.createElement('div');
+    connCaption.textContent = 'Connections';
+    connCaption.style.cssText = 'font-size: 12px; font-weight: 600;';
+    const connHint = document.createElement('div');
+    connHint.textContent = 'Connections are two-way. Changes apply immediately.';
+    connHint.style.cssText = 'font-size: 11px; color: var(--lumiverse-text-dim);';
+    const connList = document.createElement('div');
+    connList.id = 'editor-connections';
+    connList.style.cssText = 'display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;';
+    connWrap.append(connCaption, connHint, connList);
+    body.appendChild(connWrap);
+
+    // Buttons
+    const buttons = document.createElement('div');
+    buttons.style.cssText = 'display: flex; gap: 8px; flex-wrap: wrap;';
+    const save = document.createElement('button');
+    save.textContent = 'Save Place';
+    save.style.cssText =
+      'padding: 6px 14px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-accent); color: white; border: none; cursor: pointer; font-size: 12px;';
+    save.onclick = () => this.saveEditorRoom();
+    const setCurrent = document.createElement('button');
+    setCurrent.textContent = 'Set Current';
+    setCurrent.style.cssText =
+      'padding: 6px 14px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text); cursor: pointer; font-size: 12px;';
+    setCurrent.onclick = () => {
+      if (this.editorRoomId) this.setCurrent(this.editorRoomId);
+    };
+    const del = document.createElement('button');
+    del.textContent = 'Delete Place';
+    del.style.cssText =
+      'padding: 6px 14px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: #f87171; cursor: pointer; font-size: 12px;';
+    del.onclick = () => {
+      if (this.editorRoomId) this.deleteRoom(this.editorRoomId);
+    };
+    buttons.append(save, setCurrent, del);
+    body.appendChild(buttons);
+
+    void name;
+    void description;
+
+    return panel;
+  }
+
+  private field(parent: HTMLElement, caption: string, kind: 'input' | 'textarea', id?: string): HTMLElement {
+    const wrap = document.createElement('label');
+    wrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+    const cap = document.createElement('div');
+    cap.textContent = caption;
+    cap.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
+    const el = document.createElement(kind);
+    if (id) el.id = id;
+    el.style.cssText =
+      'width: 100%; padding: 8px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text);';
+    wrap.append(cap, el);
+    parent.appendChild(wrap);
+    return el;
+  }
+
+  private renderEditorPanel(map: any): void {
+    const empty = this.q('#editor-empty');
+    const body = this.q('#editor-body') as HTMLElement | null;
+    if (!empty || !body) return;
+
+    if (!map.rooms.length) {
+      (empty as HTMLElement).style.display = '';
+      body.style.display = 'none';
+      this.editorRoomId = null;
+      return;
+    }
+    (empty as HTMLElement).style.display = 'none';
+    body.style.display = 'flex';
+
+    // Rebuild the room selector only when the room set changes, to avoid
+    // clobbering interaction mid-edit.
+    const signature = map.rooms.map((r: any) => `${r.id}:${r.name}`).join('|');
+    if (signature !== this.editorRoomSignature) {
+      this.editorRoomSignature = signature;
+      const stillExists = this.editorRoomId && map.rooms.some((r: any) => r.id === this.editorRoomId);
+      if (!stillExists) {
+        this.editorRoomId = map.currentRoomId ?? map.rooms[0].id;
+      }
+      const slot = this.q('#editor-room-slot');
+      if (slot) {
+        slot.innerHTML = '';
+        this.editorRoomSelect = this.ctx.components.mountSelect(slot, {
+          value: this.editorRoomId ?? '',
+          options: map.rooms.map((r: any) => ({ value: r.id, label: r.name })),
+          onChange: (value: string) => {
+            this.editorRoomId = value || null;
+            this.fillEditorForm();
+            this.renderEditorConnections();
+          },
+        });
+      }
+    }
+
+    this.fillEditorForm();
+    this.renderEditorConnections();
+  }
+
+  private fillEditorForm(): void {
+    const room = this.currentMap?.rooms.find((r: any) => r.id === this.editorRoomId);
+    const name = this.q('#editor-name') as HTMLInputElement | null;
+    const description = this.q('#editor-description') as HTMLTextAreaElement | null;
+    const aliases = this.q('#editor-aliases') as HTMLInputElement | null;
+    if (!name || !description || !aliases) return;
+    if (name === document.activeElement || description === document.activeElement || aliases === document.activeElement) return;
+    name.value = room?.name ?? '';
+    description.value = room?.description ?? '';
+    aliases.value = Array.isArray(room?.aliases) ? room.aliases.join(', ') : '';
+    if (this.editorRoomSelect) {
+      this.editorRoomSelect.update({ value: this.editorRoomId ?? '' });
+    }
+  }
+
+  private renderEditorConnections(): void {
+    const list = this.q('#editor-connections');
+    if (!list) return;
+    list.innerHTML = '';
+
+    const map = this.currentMap;
+    const room = map?.rooms.find((r: any) => r.id === this.editorRoomId);
+    if (!map || !room) return;
+
+    const others = map.rooms.filter((r: any) => r.id !== room.id);
+    if (others.length === 0) {
+      const none = document.createElement('div');
+      none.textContent = 'Add another place to connect rooms.';
+      none.style.cssText = 'font-size: 11px; color: var(--lumiverse-text-dim);';
+      list.appendChild(none);
+      return;
+    }
+
+    for (const other of others) {
+      const row = document.createElement('label');
+      row.style.cssText = 'display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = room.connections.includes(other.id);
+      input.onchange = () => {
+        if (!this.currentChatId) return;
+        this.ctx.sendToBackend({
+          type: input.checked ? 'add_connection' : 'remove_connection',
+          chatId: this.currentChatId,
+          roomIdA: room.id,
+          roomIdB: other.id,
+        });
+      };
+      const label = document.createElement('span');
+      label.textContent = other.name;
+      row.append(input, label);
+      list.appendChild(row);
+    }
+  }
+
+  private saveEditorRoom(): void {
+    const room = this.currentMap?.rooms.find((r: any) => r.id === this.editorRoomId);
+    if (!room) return;
+    const name = ((this.q('#editor-name') as HTMLInputElement)?.value || '').trim();
+    if (!name) {
+      this.notify('warning', 'Place name is required.');
+      return;
+    }
+    const description = (this.q('#editor-description') as HTMLTextAreaElement)?.value ?? '';
+    const aliasesStr = (this.q('#editor-aliases') as HTMLInputElement)?.value ?? '';
+    const aliases = aliasesStr.split(',').map((s) => s.trim()).filter(Boolean);
+    this.ctx.sendToBackend({
+      type: 'update_room',
+      chatId: this.currentChatId,
+      room: {
+        ...room,
+        name,
+        description,
+        aliases,
+      },
+    });
+    this.notify('success', `Saved "${name}".`);
+  }
+
+  private showRoomForm(room: any | null): void {
+    const modal = this.ctx.ui.showModal({ title: room ? 'Edit Room' : 'Add Room', width: 460 });
+
+    const form = document.createElement('form');
+    form.style.cssText = 'display: flex; flex-direction: column; gap: 12px;';
+
+    const name = this.field(form, 'Room Name:', 'input', 'modal-room-name') as HTMLInputElement;
+    name.value = room?.name ?? '';
+    name.required = true;
+
+    const description = this.field(form, 'Description:', 'textarea', 'modal-room-description') as HTMLTextAreaElement;
+    description.rows = 3;
+    description.value = room?.description ?? '';
+
+    const aliases = this.field(form, 'Aliases (comma-separated):', 'input', 'modal-room-aliases') as HTMLInputElement;
+    aliases.value = Array.isArray(room?.aliases) ? room.aliases.join(', ') : '';
+
+    const buttons = document.createElement('div');
+    buttons.style.cssText = 'display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    cancel.style.cssText =
+      'padding: 8px 16px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text); cursor: pointer;';
+    cancel.onclick = () => modal.dismiss();
+
+    const save = document.createElement('button');
+    save.type = 'submit';
+    save.textContent = 'Save';
+    save.style.cssText =
+      'padding: 8px 16px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-accent); color: white; border: none; cursor: pointer;';
+
+    buttons.append(cancel, save);
+    form.appendChild(buttons);
+
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      this.saveRoom(room?.id ?? null, name.value, description.value, aliases.value);
+      modal.dismiss();
+    };
+
+    modal.root.appendChild(form);
+  }
+
+  private saveRoom(roomId: string | null, name: string, description: string, aliasesStr: string): void {
+    const aliases = aliasesStr.split(',').map((s) => s.trim()).filter(Boolean);
+    const existing = roomId ? this.currentMap?.rooms.find((r: any) => r.id === roomId) : null;
+    const room = {
+      id: roomId ?? crypto.randomUUID(),
+      name: name.trim(),
+      description,
+      aliases,
+      connections: existing?.connections ?? [],
+    };
+    this.ctx.sendToBackend({ type: 'update_room', chatId: this.currentChatId, room });
+    if (!roomId) {
+      this.editorRoomId = room.id;
+    }
+  }
+
+  private setCurrent(roomId: string): void {
+    this.ctx.sendToBackend({ type: 'set_current_room', chatId: this.currentChatId, roomId });
+  }
+
+  private async deleteRoom(roomId: string): Promise<void> {
+    const { confirmed } = await this.ctx.ui.showConfirm({
+      title: 'Delete Room',
+      message: 'Delete this room and all of its connections? This cannot be undone.',
+      variant: 'danger',
+      confirmLabel: 'Delete',
+    });
+    if (confirmed) {
+      this.ctx.sendToBackend({ type: 'delete_room', chatId: this.currentChatId, roomId });
+    }
+  }
+
+  // ── Settings panel ────────────────────────────────────────────────────────
+
+  private createSettingsPanel(): HTMLElement {
+    const panel = this.panel('Settings');
+
+    // Injection
+    const injectionTitle = document.createElement('div');
+    injectionTitle.textContent = 'Context Injection';
+    injectionTitle.style.cssText = 'font-size: 12px; font-weight: 600;';
+    panel.appendChild(injectionTitle);
+
+    panel.appendChild(this.toggle('injection-enabled', 'Enable context injection', true));
+
     const roleWrap = document.createElement('label');
     roleWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;';
     const roleCaption = document.createElement('span');
@@ -84,9 +497,8 @@ export class DrawerTab {
       roleSelect.appendChild(opt);
     }
     roleWrap.append(roleCaption, roleSelect);
-    section.appendChild(roleWrap);
+    panel.appendChild(roleWrap);
 
-    // Template
     const tplWrap = document.createElement('label');
     tplWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;';
     const tplCaption = document.createElement('span');
@@ -102,29 +514,29 @@ export class DrawerTab {
     tplHint.textContent = 'Available: {{roomName}}, {{description}}, {{exits}}';
     tplHint.style.cssText = 'font-size: 11px; color: var(--lumiverse-text-dim);';
     tplWrap.append(tplCaption, tpl, tplHint);
-    section.appendChild(tplWrap);
+    panel.appendChild(tplWrap);
 
-    // Auto-discovery
-    section.appendChild(
-      this.toggle('auto-discovery', 'Enable automatic room discovery', true)
-    );
+    // Scan prompt
+    const promptTitle = document.createElement('div');
+    promptTitle.textContent = 'Scan Chat';
+    promptTitle.style.cssText = 'font-size: 12px; font-weight: 600; margin-top: 4px;';
+    panel.appendChild(promptTitle);
 
-    // Sidecar connection selector
+    panel.appendChild(this.toggle('auto-discovery', 'Enable automatic room discovery', true));
+
     const connWrap = document.createElement('div');
-    connWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-top: 4px;';
+    connWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;';
     const connCaption = document.createElement('span');
-    connCaption.textContent = 'Sidecar connection (Scan Chat):';
+    connCaption.textContent = 'Sidecar connection:';
     connCaption.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
     const connSlot = document.createElement('div');
     connSlot.id = 'sidecar-connection-slot';
     connWrap.append(connCaption, connSlot);
-    section.appendChild(connWrap);
+    panel.appendChild(connWrap);
     void this.mountConnectionSelector(connSlot);
 
-    // Free-text model override — skips the connection-profile lookup entirely
-    // and sends exactly this model string to the provider.
     const modelWrap = document.createElement('label');
-    modelWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-top: 4px;';
+    modelWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;';
     const modelCaption = document.createElement('span');
     modelCaption.textContent = 'Model override (optional):';
     modelCaption.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
@@ -135,9 +547,41 @@ export class DrawerTab {
     modelInput.style.cssText =
       'padding: 6px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text);';
     modelWrap.append(modelCaption, modelInput);
-    section.appendChild(modelWrap);
+    panel.appendChild(modelWrap);
 
-    return section;
+    const promptWrap = document.createElement('label');
+    promptWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+    const promptCaption = document.createElement('span');
+    promptCaption.textContent = 'Scan prompt (sent to the sidecar LLM):';
+    promptCaption.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
+    const promptArea = document.createElement('textarea');
+    promptArea.id = 'scan-prompt';
+    promptArea.rows = 10;
+    promptArea.value = DEFAULT_SCAN_PROMPT;
+    promptArea.style.cssText =
+      'padding: 8px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text); font-family: monospace; font-size: 11px; resize: vertical;';
+    const promptRow = document.createElement('div');
+    promptRow.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 8px;';
+    const promptHint = document.createElement('span');
+    promptHint.textContent = 'Must contain {{conversation}} \u2014 the chat history is inserted there.';
+    promptHint.style.cssText = 'font-size: 11px; color: var(--lumiverse-text-dim);';
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.textContent = 'Reset to default';
+    resetBtn.style.cssText =
+      'padding: 4px 10px; font-size: 11px; border-radius: 3px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text); cursor: pointer;';
+    resetBtn.onclick = () => {
+      const area = this.q('#scan-prompt') as HTMLTextAreaElement | null;
+      if (area) {
+        area.value = DEFAULT_SCAN_PROMPT;
+        this.saveSettings();
+      }
+    };
+    promptRow.append(promptHint, resetBtn);
+    promptWrap.append(promptCaption, promptArea, promptRow);
+    panel.appendChild(promptWrap);
+
+    return panel;
   }
 
   private toggle(id: string, label: string, checked: boolean): HTMLElement {
@@ -175,57 +619,7 @@ export class DrawerTab {
     }
   }
 
-  private createRoomsSection(): HTMLElement {
-    const { section } = this.section('Rooms');
-
-    const header = document.createElement('div');
-    header.style.cssText = 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;';
-    const title = document.createElement('h3');
-    title.textContent = 'Rooms';
-    title.style.cssText = 'margin: 0; font-size: 14px; font-weight: 600;';
-    const addButton = document.createElement('button');
-    addButton.textContent = '+ Add Room';
-    addButton.style.cssText =
-      'padding: 4px 12px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-accent); color: white; border: none; cursor: pointer; font-size: 12px;';
-    addButton.onclick = () => this.showRoomForm(null);
-    header.append(title, addButton);
-    section.appendChild(header);
-
-    const roomsList = document.createElement('div');
-    roomsList.id = 'rooms-list';
-    roomsList.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
-    section.appendChild(roomsList);
-
-    return section;
-  }
-
-  private createActionsSection(): HTMLElement {
-    const { section } = this.section('Actions');
-
-    const row = document.createElement('div');
-    row.style.cssText = 'display: flex; flex-wrap: wrap; gap: 8px;';
-
-    row.appendChild(this.actionButton('scan-chat-btn', 'Scan Chat', () => this.handleScanChat()));
-    row.appendChild(this.actionButton('preview-map-btn', 'Preview Map', () => this.widget.show()));
-    row.appendChild(this.actionButton('export-map-btn', 'Export JSON', () => this.handleExport()));
-    row.appendChild(this.actionButton('import-map-btn', 'Import JSON', () => this.handleImport()));
-    row.appendChild(this.actionButton('manage-maps-btn', 'Manage Maps', () => this.handleManageMaps()));
-
-    section.appendChild(row);
-    return section;
-  }
-
-  private actionButton(id: string, label: string, onClick: () => void): HTMLButtonElement {
-    const btn = document.createElement('button');
-    btn.id = id;
-    btn.textContent = label;
-    btn.style.cssText =
-      'padding: 8px 16px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text); cursor: pointer;';
-    btn.onclick = onClick;
-    return btn;
-  }
-
-  // ── Settings ──────────────────────────────────────────────────────────────
+  // ── Settings persistence ──────────────────────────────────────────────────
 
   private attachSettingsListeners(): void {
     if (this.settingsListenersAttached) return;
@@ -234,17 +628,12 @@ export class DrawerTab {
     this.q('#injection-enabled')?.addEventListener('change', () => this.saveSettings());
     this.q('#injection-role')?.addEventListener('change', () => this.saveSettings());
     this.q('#auto-discovery')?.addEventListener('change', () => this.saveSettings());
-    this.q('#injection-template')?.addEventListener('input', () => {
-      if (this.templateSaveTimer) clearTimeout(this.templateSaveTimer);
-      this.templateSaveTimer = setTimeout(() => this.saveSettings(), 400);
-    });
-    this.q('#sidecar-model')?.addEventListener('input', () => {
-      if (this.templateSaveTimer) clearTimeout(this.templateSaveTimer);
-      this.templateSaveTimer = setTimeout(() => {
-        const input = this.q('#sidecar-model') as HTMLInputElement;
-        this.saveSettings({ sidecarModel: input?.value.trim() || undefined });
-      }, 400);
-    });
+    for (const id of ['#injection-template', '#scan-prompt', '#sidecar-model']) {
+      this.q(id)?.addEventListener('input', () => {
+        if (this.settingsSaveTimer) clearTimeout(this.settingsSaveTimer);
+        this.settingsSaveTimer = setTimeout(() => this.saveSettings(), 400);
+      });
+    }
   }
 
   private saveSettings(extra?: Record<string, unknown>): void {
@@ -253,7 +642,9 @@ export class DrawerTab {
       injectionEnabled: (this.q('#injection-enabled') as HTMLInputElement)?.checked,
       injectionRole: (this.q('#injection-role') as HTMLSelectElement)?.value,
       template: (this.q('#injection-template') as HTMLTextAreaElement)?.value,
+      scanPrompt: (this.q('#scan-prompt') as HTMLTextAreaElement)?.value,
       autoDiscovery: (this.q('#auto-discovery') as HTMLInputElement)?.checked,
+      sidecarModel: ((this.q('#sidecar-model') as HTMLInputElement)?.value || '').trim() || undefined,
       ...extra,
     };
     this.ctx.sendToBackend({ type: 'update_settings', chatId: this.currentChatId, settings });
@@ -274,6 +665,11 @@ export class DrawerTab {
     const tpl = this.q('#injection-template') as HTMLTextAreaElement;
     if (tpl && document.activeElement !== tpl) tpl.value = map.settings.template;
 
+    const prompt = this.q('#scan-prompt') as HTMLTextAreaElement;
+    if (prompt && document.activeElement !== prompt) {
+      prompt.value = map.settings.scanPrompt || DEFAULT_SCAN_PROMPT;
+    }
+
     const auto = this.q('#auto-discovery') as HTMLInputElement;
     if (auto) auto.checked = map.settings.autoDiscovery;
 
@@ -285,6 +681,7 @@ export class DrawerTab {
     if (model && document.activeElement !== model) model.value = map.settings.sidecarModel ?? '';
 
     this.renderRoomsList(map);
+    this.renderEditorPanel(map);
   }
 
   private renderRoomsList(map: any): void {
@@ -334,7 +731,12 @@ export class DrawerTab {
     actions.appendChild(
       this.smallButton(isCurrent ? '\u2713 Current' : 'Set Current', () => this.setCurrent(room.id))
     );
-    actions.appendChild(this.smallButton('Edit', () => this.showRoomForm(room)));
+    actions.appendChild(
+      this.smallButton('Edit', () => {
+        this.editorRoomId = room.id;
+        this.setActiveTab('editor');
+      })
+    );
     actions.appendChild(
       this.smallButton('Delete', () => this.deleteRoom(room.id), '#f87171')
     );
@@ -349,96 +751,6 @@ export class DrawerTab {
     btn.style.cssText = `padding: 4px 8px; font-size: 11px; border-radius: 3px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); color: ${color ?? 'var(--lumiverse-text)'}; cursor: pointer;`;
     btn.onclick = onClick;
     return btn;
-  }
-
-  // ── Room forms (XSS-safe: values set via properties, never innerHTML) ──────
-
-  private showRoomForm(room: any | null): void {
-    const modal = this.ctx.ui.showModal({ title: room ? 'Edit Room' : 'Add Room', width: 460 });
-
-    const form = document.createElement('form');
-    form.style.cssText = 'display: flex; flex-direction: column; gap: 12px;';
-
-    const name = this.field(form, 'Room Name:', 'input') as HTMLInputElement;
-    name.value = room?.name ?? '';
-    name.required = true;
-
-    const description = this.field(form, 'Description:', 'textarea') as HTMLTextAreaElement;
-    description.rows = 3;
-    description.value = room?.description ?? '';
-
-    const aliases = this.field(form, 'Aliases (comma-separated):', 'input') as HTMLInputElement;
-    aliases.value = Array.isArray(room?.aliases) ? room.aliases.join(', ') : '';
-
-    const buttons = document.createElement('div');
-    buttons.style.cssText = 'display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;';
-
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.textContent = 'Cancel';
-    cancel.style.cssText =
-      'padding: 8px 16px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text); cursor: pointer;';
-    cancel.onclick = () => modal.dismiss();
-
-    const save = document.createElement('button');
-    save.type = 'submit';
-    save.textContent = 'Save';
-    save.style.cssText =
-      'padding: 8px 16px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-accent); color: white; border: none; cursor: pointer;';
-
-    buttons.append(cancel, save);
-    form.appendChild(buttons);
-
-    form.onsubmit = (event) => {
-      event.preventDefault();
-      this.saveRoom(room?.id ?? null, name.value, description.value, aliases.value);
-      modal.dismiss();
-    };
-
-    modal.root.appendChild(form);
-  }
-
-  private field(parent: HTMLElement, caption: string, kind: 'input' | 'textarea'): HTMLElement {
-    const wrap = document.createElement('label');
-    wrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
-    const cap = document.createElement('div');
-    cap.textContent = caption;
-    cap.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
-    const el = document.createElement(kind);
-    el.style.cssText =
-      'width: 100%; padding: 8px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill-subtle); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text);';
-    wrap.append(cap, el);
-    parent.appendChild(wrap);
-    return el;
-  }
-
-  private saveRoom(roomId: string | null, name: string, description: string, aliasesStr: string): void {
-    const aliases = aliasesStr.split(',').map((s) => s.trim()).filter(Boolean);
-    const existing = roomId ? this.currentMap?.rooms.find((r: any) => r.id === roomId) : null;
-    const room = {
-      id: roomId ?? crypto.randomUUID(),
-      name: name.trim(),
-      description,
-      aliases,
-      connections: existing?.connections ?? [],
-    };
-    this.ctx.sendToBackend({ type: 'update_room', chatId: this.currentChatId, room });
-  }
-
-  private setCurrent(roomId: string): void {
-    this.ctx.sendToBackend({ type: 'set_current_room', chatId: this.currentChatId, roomId });
-  }
-
-  private async deleteRoom(roomId: string): Promise<void> {
-    const { confirmed } = await this.ctx.ui.showConfirm({
-      title: 'Delete Room',
-      message: 'Delete this room and all of its connections? This cannot be undone.',
-      variant: 'danger',
-      confirmLabel: 'Delete',
-    });
-    if (confirmed) {
-      this.ctx.sendToBackend({ type: 'delete_room', chatId: this.currentChatId, roomId });
-    }
   }
 
   // ── Scan Chat ─────────────────────────────────────────────────────────────
@@ -460,7 +772,7 @@ export class DrawerTab {
     try {
       const connectionId = this.currentMap?.settings?.sidecarConnectionId;
       const modelOverride = ((this.q('#sidecar-model') as HTMLInputElement)?.value || '').trim() || undefined;
-      // Backend now reads messages directly via spindle.chat.getMessages()
+      // Backend reads messages directly via spindle.chat.getMessages()
       this.ctx.sendToBackend({ type: 'scan_chat', chatId: this.currentChatId, connectionId, model: modelOverride });
     } catch (error) {
       this.notify('error', `Scan failed: ${error}`);
@@ -469,7 +781,7 @@ export class DrawerTab {
         btn.textContent = 'Scan Chat';
       }
     }
-    
+
     // Reset button after a short delay (backend response via scan_result will arrive)
     setTimeout(() => {
       if (btn) {
@@ -631,13 +943,15 @@ export class DrawerTab {
   clear(): void {
     this.currentChatId = null;
     this.currentMap = null;
+    this.editorRoomId = null;
     const roomsList = this.q('#rooms-list');
     if (roomsList) roomsList.innerHTML = '';
   }
 
   destroy(): void {
-    if (this.templateSaveTimer) clearTimeout(this.templateSaveTimer);
+    if (this.settingsSaveTimer) clearTimeout(this.settingsSaveTimer);
     this.connectionSelect?.destroy?.();
+    this.editorRoomSelect?.destroy?.();
     this.tab.destroy();
   }
 

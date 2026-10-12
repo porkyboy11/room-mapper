@@ -1,38 +1,26 @@
 // Room Mapper Backend - Sidecar Scanner
 import type { SpindleAPI } from 'lumiverse-spindle-types';
+import { DEFAULT_SCAN_PROMPT } from './types';
 
 const MAX_CONVERSATION_CHARS = 12000;
 
 export class SidecarScanner {
   constructor(private spindle: SpindleAPI) {}
 
-  async scanChat(chatId: string, messages: string[], connectionId?: string, userId?: string, modelOverride?: string): Promise<any> {
+  async scanChat(chatId: string, messages: string[], connectionId?: string, userId?: string, modelOverride?: string, promptTemplate?: string): Promise<any> {
     try {
       if (!this.spindle.permissions.has('generation')) {
         throw new Error('Generation permission required for chat scanning');
       }
 
       const conversationText = messages.join('\n\n').slice(0, MAX_CONVERSATION_CHARS);
-      const prompt = `You are analyzing a roleplay conversation to extract location information.
-
-Review the conversation below and identify:
-1. All distinct locations/rooms mentioned
-2. A brief description of each location based on the narrative
-3. Which locations are connected (characters moved between them)
-
-Return ONLY valid JSON in this exact format, with no prose before or after:
-{
-  "rooms": [
-    {"name": "Kitchen", "description": "A modern kitchen with stainless steel appliances", "aliases": ["cook room"]},
-    {"name": "Living Room", "description": "Cozy living space with a fireplace", "aliases": []}
-  ],
-  "connections": [
-    {"from": "Kitchen", "to": "Living Room"}
-  ]
-}
-
-Conversation:
-${conversationText}`;
+      // User-editable template from settings; fall back to the default when it
+      // is missing or no longer contains the {{conversation}} placeholder.
+      const template =
+        typeof promptTemplate === 'string' && promptTemplate.includes('{{conversation}}')
+          ? promptTemplate
+          : DEFAULT_SCAN_PROMPT;
+      const prompt = template.replace(/\{\{conversation\}\}/g, conversationText);
 
       // userId is required for operator-scoped installs; user-scoped installs
       // infer it from the extension owner, so omit it when absent.

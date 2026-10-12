@@ -3,6 +3,12 @@ import type { SpindleAPI } from 'lumiverse-spindle-types';
 import type { RoomMap } from './types';
 import { MAP_VERSION, createEmptyMap } from './types';
 
+/** Backfill settings added in later versions so old maps keep working. */
+function withDefaultSettings(map: RoomMap): RoomMap {
+  map.settings = { ...createEmptyMap().settings, ...map.settings };
+  return map;
+}
+
 export class MapStorage {
   private inFlight = new Map<string, Promise<RoomMap>>();
   private cache = new Map<string, { map: RoomMap; at: number }>();
@@ -67,7 +73,7 @@ export class MapStorage {
         return empty;
       }
 
-      return parsed;
+      return withDefaultSettings(parsed);
     } catch (error) {
       this.spindle.log.warn(`Failed to load map for chat ${chatId}: ${error}`);
       if (raw) await this.backupCorrupt(chatId, raw);

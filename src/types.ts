@@ -17,6 +17,7 @@ export interface MapSettings {
   template: string;
   sidecarConnectionId?: string;
   sidecarModel?: string;
+  scanPrompt: string;
   autoDiscovery: boolean;
 }
 
@@ -32,6 +33,28 @@ export const DEFAULT_TEMPLATE = `[Current Location: {{roomName}}]
 {{description}}
 Exits: {{exits}}`;
 
+/** Default scan prompt. Must contain a {{conversation}} placeholder. */
+export const DEFAULT_SCAN_PROMPT = `You are analyzing a roleplay conversation to extract location information.
+
+Review the conversation below and identify:
+1. All distinct locations/rooms mentioned
+2. A brief description of each location based on the narrative
+3. Which locations are connected (characters moved between them)
+
+Return ONLY valid JSON in this exact format, with no prose before or after:
+{
+  "rooms": [
+    {"name": "Kitchen", "description": "A modern kitchen with stainless steel appliances", "aliases": ["cook room"]},
+    {"name": "Living Room", "description": "Cozy living space with a fireplace", "aliases": []}
+  ],
+  "connections": [
+    {"from": "Kitchen", "to": "Living Room"}
+  ]
+}
+
+Conversation:
+{{conversation}}`;
+
 export function createEmptyMap(): RoomMap {
   return {
     version: MAP_VERSION,
@@ -41,6 +64,7 @@ export function createEmptyMap(): RoomMap {
       injectionEnabled: true,
       injectionRole: 'system',
       template: DEFAULT_TEMPLATE,
+      scanPrompt: DEFAULT_SCAN_PROMPT,
       autoDiscovery: true,
     },
     updatedAt: Date.now(),
