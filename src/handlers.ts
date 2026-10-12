@@ -11,12 +11,12 @@ export class MessageHandler {
     private storage: MapStorage,
     private scanner: SidecarScanner
   ) {
-    this.spindle.onFrontendMessage((payload) => {
-      void this.handleMessage(payload as any);
+    this.spindle.onFrontendMessage((payload, userId) => {
+      void this.handleMessage(payload as any, userId);
     });
   }
 
-  private async handleMessage(msg: any): Promise<void> {
+  private async handleMessage(msg: any, userId?: string): Promise<void> {
     try {
       switch (msg?.type) {
         case 'load_map':
@@ -53,13 +53,13 @@ export class MessageHandler {
           await this.handleDeleteMap(msg.chatId);
           break;
         case 'scan_chat':
-          await this.handleScanChat(msg.chatId, msg.messages, msg.connectionId);
+          await this.handleScanChat(msg.chatId, msg.messages, msg.connectionId, userId);
           break;
         case 'merge_suggestions':
           await this.handleMergeSuggestions(msg.chatId, msg.selectedRooms, msg.selectedConnections);
           break;
         case 'toast':
-          this.handleToast(msg.level, msg.message);
+          this.handleToast(msg.level, msg.message, userId);
           break;
       }
     } catch (error) {
@@ -69,21 +69,22 @@ export class MessageHandler {
   }
 
   /** Relay a frontend-originated notification through the backend toast API. */
-  private handleToast(level: unknown, message: unknown): void {
+  private handleToast(level: unknown, message: unknown, userId?: string): void {
     const text = typeof message === 'string' ? message : String(message ?? '');
     if (!text) return;
+    const options = userId ? { userId } : undefined;
     switch (level) {
       case 'success':
-        this.spindle.toast.success(text);
+        this.spindle.toast.success(text, options);
         break;
       case 'warning':
-        this.spindle.toast.warning(text);
+        this.spindle.toast.warning(text, options);
         break;
       case 'error':
-        this.spindle.toast.error(text);
+        this.spindle.toast.error(text, options);
         break;
       default:
-        this.spindle.toast.info(text);
+        this.spindle.toast.info(text, options);
     }
   }
 
@@ -188,18 +189,18 @@ export class MessageHandler {
     this.spindle.toast.success('Map deleted');
   }
 
-  private async handleScanChat(chatId: string, _unused: unknown, connectionId?: string): Promise<void> {
+  private async handleScanChat(chatId: string, _unused: unknown, connectionId?: string, userId?: string): Promise<void> {
     try {
       // Read messages from backend using the stable spindle.chat.getMessages API
       const messages = await this.spindle.chat.getMessages(chatId);
-      
+
       if (!Array.isArray(messages) || messages.length === 0) {
         this.spindle.sendToFrontend({
           type: 'scan_result',
           chatId,
           suggestions: null,
           error: 'No conversation messages available',
-        });
+        }, userId);
         return;
       }
 
@@ -211,13 +212,13 @@ export class MessageHandler {
         return `${role}: ${content}`;
       });
 
-      const result = await this.scanner.scanChat(chatId, text, connectionId);
+      const result = await this.scanner.scanChat(chatId, text, connectionId, userId);
       this.spindle.sendToFrontend({
         type: 'scan_result',
         chatId,
         suggestions: result.suggestions ?? null,
         error: result.error,
-      });
+      }, userId);
     } catch (error) {
       this.spindle.log.error(`Scan chat failed: ${error}`);
       this.spindle.sendToFrontend({
@@ -225,7 +226,7 @@ export class MessageHandler {
         chatId,
         suggestions: null,
         error: String(error),
-      });
+      }, userId);
     }
   }
 

@@ -6,7 +6,7 @@ const MAX_CONVERSATION_CHARS = 12000;
 export class SidecarScanner {
   constructor(private spindle: SpindleAPI) {}
 
-  async scanChat(chatId: string, messages: string[], connectionId?: string): Promise<any> {
+  async scanChat(chatId: string, messages: string[], connectionId?: string, userId?: string): Promise<any> {
     try {
       if (!this.spindle.permissions.has('generation')) {
         throw new Error('Generation permission required for chat scanning');
@@ -34,15 +34,19 @@ Return ONLY valid JSON in this exact format, with no prose before or after:
 Conversation:
 ${conversationText}`;
 
+      // userId is required for operator-scoped installs; user-scoped installs
+      // infer it from the extension owner, so omit it when absent.
       const result = (connectionId
         ? await this.spindle.generate.raw({
             type: 'raw',
             messages: [{ role: 'user', content: prompt }],
             connection_id: connectionId,
+            ...(userId ? { userId } : {}),
           })
         : await this.spindle.generate.quiet({
             type: 'quiet',
             messages: [{ role: 'user', content: prompt }],
+            ...(userId ? { userId } : {}),
           })) as { content?: string };
 
       const suggestions = this.parseSuggestions(result?.content || '');
