@@ -36,13 +36,30 @@ ${conversationText}`;
 
       // userId is required for operator-scoped installs; user-scoped installs
       // infer it from the extension owner, so omit it when absent.
-      const result = (connectionId
-        ? await this.spindle.generate.raw({
-            type: 'raw',
+      // generate.raw does not resolve the model from connection_id, so fetch
+      // the connection profile and pass provider/model explicitly. If the
+      // profile is unusable, fall back to quiet (active chat connection).
+      let rawRequest: any = null;
+      if (connectionId) {
+        const profile = await this.spindle.connections.get(connectionId);
+        if (profile && profile.model) {
+          rawRequest = {
+            type: 'raw' as const,
             messages: [{ role: 'user', content: prompt }],
             connection_id: connectionId,
+            provider: profile.provider,
+            model: profile.model,
             ...(userId ? { userId } : {}),
-          })
+          };
+        } else {
+          this.spindle.log.warn(
+            `Sidecar connection ${connectionId} is unavailable or has no model; using the active chat connection instead.`
+          );
+        }
+      }
+
+      const result = (rawRequest
+        ? await this.spindle.generate.raw(rawRequest)
         : await this.spindle.generate.quiet({
             type: 'quiet',
             messages: [{ role: 'user', content: prompt }],
