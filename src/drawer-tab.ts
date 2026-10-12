@@ -121,6 +121,22 @@ export class DrawerTab {
     section.appendChild(connWrap);
     void this.mountConnectionSelector(connSlot);
 
+    // Free-text model override — skips the connection-profile lookup entirely
+    // and sends exactly this model string to the provider.
+    const modelWrap = document.createElement('label');
+    modelWrap.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-top: 4px;';
+    const modelCaption = document.createElement('span');
+    modelCaption.textContent = 'Model override (optional):';
+    modelCaption.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
+    const modelInput = document.createElement('input');
+    modelInput.type = 'text';
+    modelInput.id = 'sidecar-model';
+    modelInput.placeholder = 'Uses the connection\u2019s model when empty';
+    modelInput.style.cssText =
+      'padding: 6px; border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); color: var(--lumiverse-text);';
+    modelWrap.append(modelCaption, modelInput);
+    section.appendChild(modelWrap);
+
     return section;
   }
 
@@ -222,6 +238,13 @@ export class DrawerTab {
       if (this.templateSaveTimer) clearTimeout(this.templateSaveTimer);
       this.templateSaveTimer = setTimeout(() => this.saveSettings(), 400);
     });
+    this.q('#sidecar-model')?.addEventListener('input', () => {
+      if (this.templateSaveTimer) clearTimeout(this.templateSaveTimer);
+      this.templateSaveTimer = setTimeout(() => {
+        const input = this.q('#sidecar-model') as HTMLInputElement;
+        this.saveSettings({ sidecarModel: input?.value.trim() || undefined });
+      }, 400);
+    });
   }
 
   private saveSettings(extra?: Record<string, unknown>): void {
@@ -257,6 +280,9 @@ export class DrawerTab {
     if (this.connectionSelect && map.settings.sidecarConnectionId !== undefined) {
       this.connectionSelect.update({ value: map.settings.sidecarConnectionId ?? '' });
     }
+
+    const model = this.q('#sidecar-model') as HTMLInputElement;
+    if (model && document.activeElement !== model) model.value = map.settings.sidecarModel ?? '';
 
     this.renderRoomsList(map);
   }
@@ -433,8 +459,9 @@ export class DrawerTab {
 
     try {
       const connectionId = this.currentMap?.settings?.sidecarConnectionId;
+      const modelOverride = ((this.q('#sidecar-model') as HTMLInputElement)?.value || '').trim() || undefined;
       // Backend now reads messages directly via spindle.chat.getMessages()
-      this.ctx.sendToBackend({ type: 'scan_chat', chatId: this.currentChatId, connectionId });
+      this.ctx.sendToBackend({ type: 'scan_chat', chatId: this.currentChatId, connectionId, model: modelOverride });
     } catch (error) {
       this.notify('error', `Scan failed: ${error}`);
       if (btn) {

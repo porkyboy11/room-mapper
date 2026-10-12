@@ -16,6 +16,7 @@ export interface MapSettings {
   injectionRole: 'system' | 'user' | 'assistant';
   template: string;
   sidecarConnectionId?: string;
+  sidecarModel?: string;
   autoDiscovery: boolean;
 }
 

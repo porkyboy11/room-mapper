@@ -6,7 +6,7 @@ const MAX_CONVERSATION_CHARS = 12000;
 export class SidecarScanner {
   constructor(private spindle: SpindleAPI) {}
 
-  async scanChat(chatId: string, messages: string[], connectionId?: string, userId?: string): Promise<any> {
+  async scanChat(chatId: string, messages: string[], connectionId?: string, userId?: string, modelOverride?: string): Promise<any> {
     try {
       if (!this.spindle.permissions.has('generation')) {
         throw new Error('Generation permission required for chat scanning');
@@ -36,12 +36,22 @@ ${conversationText}`;
 
       // userId is required for operator-scoped installs; user-scoped installs
       // infer it from the extension owner, so omit it when absent.
-      // generate.raw does not resolve the model from connection_id, so fetch
-      // the connection profile and pass provider/model explicitly. If the
-      // profile is unusable, fall back to quiet (active chat connection).
+      // generate.raw does not resolve the model from connection_id, so a model
+      // must be supplied: either the user's free-text override or the one from
+      // the connection profile. If neither is usable, fall back to quiet
+      // (active chat connection).
       let rawRequest: any = null;
-      if (connectionId) {
-        const profile = await this.spindle.connections.get(connectionId);
+      if (connectionId && modelOverride) {
+        // Explicit model: skip the profile lookup entirely.
+        rawRequest = {
+          type: 'raw' as const,
+          messages: [{ role: 'user', content: prompt }],
+          connection_id: connectionId,
+          model: modelOverride,
+          ...(userId ? { userId } : {}),
+        };
+      } else if (connectionId) {
+        const profile = await this.spindle.connections.get(connectionId, userId);
         if (profile && profile.model) {
           rawRequest = {
             type: 'raw' as const,

@@ -53,7 +53,7 @@ export class MessageHandler {
           await this.handleDeleteMap(msg.chatId);
           break;
         case 'scan_chat':
-          await this.handleScanChat(msg.chatId, msg.messages, msg.connectionId, userId);
+          await this.handleScanChat(msg.chatId, msg.messages, msg.connectionId, userId, msg.model);
           break;
         case 'merge_suggestions':
           await this.handleMergeSuggestions(msg.chatId, msg.selectedRooms, msg.selectedConnections);
@@ -189,7 +189,7 @@ export class MessageHandler {
     this.spindle.toast.success('Map deleted');
   }
 
-  private async handleScanChat(chatId: string, _unused: unknown, connectionId?: string, userId?: string): Promise<void> {
+  private async handleScanChat(chatId: string, _unused: unknown, connectionId?: string, userId?: string, modelOverride?: string): Promise<void> {
     try {
       // Read messages from backend using the stable spindle.chat.getMessages API
       const messages = await this.spindle.chat.getMessages(chatId);
@@ -212,7 +212,7 @@ export class MessageHandler {
         return `${role}: ${content}`;
       });
 
-      const result = await this.scanner.scanChat(chatId, text, connectionId, userId);
+      const result = await this.scanner.scanChat(chatId, text, connectionId, userId, modelOverride);
       this.spindle.sendToFrontend({
         type: 'scan_result',
         chatId,
