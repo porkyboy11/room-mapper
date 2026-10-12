@@ -29,6 +29,16 @@ Return ONLY valid JSON in this exact format, with no prose before or after:
 Conversation:
 {{conversation}}`;
 
+// Duplicated from src/types.ts (backend and frontend are separate bundles).
+// Keep both definitions in sync.
+function normalizeRoomKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/['’`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 type TabId = 'map' | 'editor' | 'settings';
 
 export class DrawerTab {
@@ -791,6 +801,17 @@ export class DrawerTab {
     }, 500);
   }
 
+  /** Fuzzy-match a suggested name against existing room names and aliases. */
+  private findRoomBySuggestion(name: string): any {
+    const key = normalizeRoomKey(name);
+    if (!key || !this.currentMap) return undefined;
+    return this.currentMap.rooms.find(
+      (room: any) =>
+        normalizeRoomKey(room.name) === key ||
+        (Array.isArray(room.aliases) && room.aliases.some((alias: string) => normalizeRoomKey(alias) === key))
+    );
+  }
+
   showScanResults(chatId: string, suggestions: any): void {
     const rooms = Array.isArray(suggestions?.rooms) ? suggestions.rooms : [];
     const connections = Array.isArray(suggestions?.connections) ? suggestions.connections : [];
@@ -813,22 +834,30 @@ export class DrawerTab {
 
     for (const room of rooms) {
       if (!room || typeof room.name !== 'string') continue;
+      const duplicate = this.findRoomBySuggestion(room.name);
       const row = document.createElement('label');
       row.style.cssText = 'display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px;';
       const input = document.createElement('input');
       input.type = 'checkbox';
-      input.checked = true;
+      input.checked = !duplicate;
+      input.disabled = Boolean(duplicate);
       const text = document.createElement('div');
       const strong = document.createElement('div');
-      strong.textContent = room.name;
-      strong.style.cssText = 'font-weight: 600;';
+      strong.textContent = duplicate ? `${room.name} (already on map)` : room.name;
+      strong.style.cssText = duplicate ? 'font-weight: 600; color: var(--lumiverse-text-dim);' : 'font-weight: 600;';
       const desc = document.createElement('div');
       desc.textContent = typeof room.description === 'string' ? room.description : '';
       desc.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
       text.append(strong, desc);
       row.append(input, text);
-      roomSection.appendChild(row);
+      if (!duplicate) roomSection.appendChild(row);
       roomChecks.push({ room, input });
+    }
+    if (!roomSection.querySelector('label')) {
+      const none = document.createElement('div');
+      none.textContent = 'No new locations found.';
+      none.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
+      roomSection.appendChild(none);
     }
     body.appendChild(roomSection);
 
@@ -841,16 +870,31 @@ export class DrawerTab {
       connSection.appendChild(connTitle);
       for (const conn of connections) {
         if (!conn || typeof conn.from !== 'string' || typeof conn.to !== 'string') continue;
+        const roomA = this.findRoomBySuggestion(conn.from);
+        const roomB = this.findRoomBySuggestion(conn.to);
+        const alreadyConnected = Boolean(
+          roomA && roomB && roomA.id !== roomB.id && roomA.connections.includes(roomB.id)
+        );
         const row = document.createElement('label');
         row.style.cssText = 'display: flex; gap: 8px; align-items: center; margin-bottom: 4px; font-size: 12px;';
         const input = document.createElement('input');
         input.type = 'checkbox';
-        input.checked = true;
+        input.checked = !alreadyConnected;
+        input.disabled = alreadyConnected;
         const text = document.createElement('span');
-        text.textContent = `${conn.from} \u2194 ${conn.to}`;
+        text.textContent = alreadyConnected
+          ? `${conn.from} \u2194 ${conn.to} (already connected)`
+          : `${conn.from} \u2194 ${conn.to}`;
+        if (alreadyConnected) text.style.color = 'var(--lumiverse-text-dim)';
         row.append(input, text);
-        connSection.appendChild(row);
+        if (!alreadyConnected) connSection.appendChild(row);
         connChecks.push({ conn, input });
+      }
+      if (!connSection.querySelector('label')) {
+        const none = document.createElement('div');
+        none.textContent = 'No new connections found.';
+        none.style.cssText = 'font-size: 12px; color: var(--lumiverse-text-dim);';
+        connSection.appendChild(none);
       }
       body.appendChild(connSection);
     }

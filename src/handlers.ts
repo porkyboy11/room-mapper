@@ -1,7 +1,7 @@
 // Room Mapper Backend - Message Handlers
 import type { SpindleAPI } from 'lumiverse-spindle-types';
 import type { Room, RoomMap } from './types';
-import { isValidRoom, normalizeRoom } from './types';
+import { isValidRoom, normalizeRoom, normalizeRoomKey } from './types';
 import { MapStorage } from './storage';
 import { SidecarScanner } from './sidecar';
 
@@ -212,9 +212,16 @@ export class MessageHandler {
         return `${role}: ${content}`;
       });
 
-      // User-editable scan prompt lives in per-map settings.
+      // User-editable scan prompt lives in per-map settings; tell the LLM what
+      // is already on the map so repeat scans stop re-suggesting known rooms.
       const map = await this.storage.getCachedMap(chatId);
-      const result = await this.scanner.scanChat(chatId, text, connectionId, userId, modelOverride, map.settings.scanPrompt);
+      const existingRooms = map.rooms
+        .map((r) => {
+          const aliases = r.aliases.length ? ` (aliases: ${r.aliases.join(', ')})` : '';
+          return `- ${r.name}${aliases}`;
+        })
+        .join('\n');
+      const result = await this.scanner.scanChat(chatId, text, connectionId, userId, modelOverride, map.settings.scanPrompt, existingRooms);
       this.spindle.sendToFrontend({
         type: 'scan_result',
         chatId,
@@ -232,6 +239,17 @@ export class MessageHandler {
     }
   }
 
+  /** Match a suggested name against existing room names and aliases, fuzzily. */
+  private findRoomBySuggestion(map: RoomMap, name: string): Room | undefined {
+    const key = normalizeRoomKey(name);
+    if (!key) return undefined;
+    return map.rooms.find(
+      (room) =>
+        normalizeRoomKey(room.name) === key ||
+        room.aliases.some((alias) => normalizeRoomKey(alias) === key)
+    );
+  }
+
   private async handleMergeSuggestions(
     chatId: string,
     selectedRooms: any,
@@ -244,15 +262,18 @@ export class MessageHandler {
 
     for (const suggested of rooms) {
       if (!suggested || typeof suggested.name !== 'string' || !suggested.name.trim()) continue;
-      const exists = map.rooms.find((r) => r.name.toLowerCase() === suggested.name.trim().toLowerCase());
+      // Fuzzy match on name and aliases — LLM name variants must not create
+      // duplicates of rooms that already exist.
+      const exists = this.findRoomBySuggestion(map, suggested.name.trim());
       if (exists) continue;
+      const aliases = Array.isArray(suggested.aliases)
+        ? suggested.aliases.filter((a: unknown): a is string => typeof a === 'string')
+        : [];
       const newRoom: Room = {
         id: crypto.randomUUID(),
         name: suggested.name.trim(),
         description: typeof suggested.description === 'string' ? suggested.description : '',
-        aliases: Array.isArray(suggested.aliases)
-          ? suggested.aliases.filter((a: unknown): a is string => typeof a === 'string')
-          : [],
+        aliases,
         connections: [],
       };
       map.rooms.push(newRoom);
@@ -260,8 +281,8 @@ export class MessageHandler {
 
     for (const conn of connections) {
       if (!conn || typeof conn.from !== 'string' || typeof conn.to !== 'string') continue;
-      const roomA = map.rooms.find((r) => r.name === conn.from);
-      const roomB = map.rooms.find((r) => r.name === conn.to);
+      const roomA = this.findRoomBySuggestion(map, conn.from);
+      const roomB = this.findRoomBySuggestion(map, conn.to);
       if (roomA && roomB && roomA.id !== roomB.id && !roomA.connections.includes(roomB.id)) {
         roomA.connections.push(roomB.id);
         roomB.connections.push(roomA.id);

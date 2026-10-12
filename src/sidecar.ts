@@ -7,7 +7,7 @@ const MAX_CONVERSATION_CHARS = 12000;
 export class SidecarScanner {
   constructor(private spindle: SpindleAPI) {}
 
-  async scanChat(chatId: string, messages: string[], connectionId?: string, userId?: string, modelOverride?: string, promptTemplate?: string): Promise<any> {
+  async scanChat(chatId: string, messages: string[], connectionId?: string, userId?: string, modelOverride?: string, promptTemplate?: string, existingRooms?: string): Promise<any> {
     try {
       if (!this.spindle.permissions.has('generation')) {
         throw new Error('Generation permission required for chat scanning');
@@ -20,7 +20,22 @@ export class SidecarScanner {
         typeof promptTemplate === 'string' && promptTemplate.includes('{{conversation}}')
           ? promptTemplate
           : DEFAULT_SCAN_PROMPT;
-      const prompt = template.replace(/\{\{conversation\}\}/g, conversationText);
+      const roomsList = existingRooms && existingRooms.trim() ? existingRooms.trim() : '(none)';
+
+      let prompt: string;
+      if (template.includes('{{rooms}}')) {
+        prompt = template.replace(/\{\{rooms\}\}/g, roomsList);
+      } else {
+        // Old user-saved templates have no {{rooms}} placeholder — append the
+        // existing-rooms block so repeat scans stop re-suggesting known rooms.
+        prompt = `${template}
+
+The map already contains these locations:
+${roomsList}
+
+Do NOT suggest these again. Use their exact names when describing connections. Only suggest genuinely new locations.`;
+      }
+      prompt = prompt.replace(/\{\{conversation\}\}/g, conversationText);
 
       // userId is required for operator-scoped installs; user-scoped installs
       // infer it from the extension owner, so omit it when absent.

@@ -52,6 +52,11 @@ Return ONLY valid JSON in this exact format, with no prose before or after:
   ]
 }
 
+The map already contains these locations:
+{{rooms}}
+
+Do NOT suggest these again. Use their exact names when describing connections. Only suggest genuinely new locations.
+
 Conversation:
 {{conversation}}`;
 
@@ -82,6 +87,15 @@ export function isValidRoom(value: any): value is Room {
     Array.isArray(value.aliases) &&
     Array.isArray(value.connections)
   );
+}
+
+/** Normalize a room name/alias for fuzzy duplicate matching. */
+export function normalizeRoomKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/['’`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 /** Normalize a room payload, dropping non-string entries from arrays. */
