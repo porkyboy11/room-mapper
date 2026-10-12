@@ -425,12 +425,6 @@ export class DrawerTab {
       return;
     }
 
-    const messagesApi = (this.ctx as any).messages;
-    if (!messagesApi?.list) {
-      this.notify('error', 'Chat message access is unavailable on this host.');
-      return;
-    }
-
     const btn = this.q('#scan-chat-btn') as HTMLButtonElement | null;
     if (btn) {
       btn.disabled = true;
@@ -438,25 +432,24 @@ export class DrawerTab {
     }
 
     try {
-      const all = await messagesApi.list(this.currentChatId);
-      const recent = (Array.isArray(all) ? all : []).slice(-40);
-      const text = recent.map(
-        (m: any) => `${m.is_user ? 'User' : 'Assistant'}: ${typeof m.content === 'string' ? m.content : ''}`
-      );
-      if (text.length === 0) {
-        this.notify('warning', 'No messages to scan yet.');
-        return;
-      }
       const connectionId = this.currentMap?.settings?.sidecarConnectionId;
-      this.ctx.sendToBackend({ type: 'scan_chat', chatId: this.currentChatId, messages: text, connectionId });
+      // Backend now reads messages directly via spindle.chat.getMessages()
+      this.ctx.sendToBackend({ type: 'scan_chat', chatId: this.currentChatId, connectionId });
     } catch (error) {
       this.notify('error', `Scan failed: ${error}`);
-    } finally {
       if (btn) {
         btn.disabled = false;
         btn.textContent = 'Scan Chat';
       }
     }
+    
+    // Reset button after a short delay (backend response via scan_result will arrive)
+    setTimeout(() => {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Scan Chat';
+      }
+    }, 500);
   }
 
   showScanResults(chatId: string, suggestions: any): void {

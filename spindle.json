@@ -1,7 +1,7 @@
 {
   "identifier": "room_mapper",
   "name": "Room Mapper",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Visual environment tracking with interactive room maps and automatic context injection",
   "author": "Room Mapper Team",
   "github": "https://github.com/room-mapper/room-mapper",
@@ -9,7 +9,8 @@
   "permissions": [
     "interceptor",
     "ui_panels",
-    "generation"
+    "generation",
+    "chat_mutation"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js"

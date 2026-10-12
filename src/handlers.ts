@@ -188,22 +188,45 @@ export class MessageHandler {
     this.spindle.toast.success('Map deleted');
   }
 
-  private async handleScanChat(chatId: string, messages: unknown, connectionId?: string): Promise<void> {
-    const text = Array.isArray(messages)
-      ? messages.filter((m): m is string => typeof m === 'string')
-      : [];
-    if (text.length === 0) {
-      this.spindle.sendToFrontend({ type: 'scan_result', chatId, suggestions: null, error: 'No conversation text available' });
-      return;
-    }
+  private async handleScanChat(chatId: string, _unused: unknown, connectionId?: string): Promise<void> {
+    try {
+      // Read messages from backend using the stable spindle.chat.getMessages API
+      const messages = await this.spindle.chat.getMessages(chatId);
+      
+      if (!Array.isArray(messages) || messages.length === 0) {
+        this.spindle.sendToFrontend({
+          type: 'scan_result',
+          chatId,
+          suggestions: null,
+          error: 'No conversation messages available',
+        });
+        return;
+      }
 
-    const result = await this.scanner.scanChat(chatId, text, connectionId);
-    this.spindle.sendToFrontend({
-      type: 'scan_result',
-      chatId,
-      suggestions: result.suggestions ?? null,
-      error: result.error,
-    });
+      // Format last ~40 messages as "Role: content" strings for the sidecar LLM
+      const recent = messages.slice(-40);
+      const text = recent.map((m) => {
+        const role = m.is_user ? 'User' : 'Assistant';
+        const content = typeof m.content === 'string' ? m.content : '';
+        return `${role}: ${content}`;
+      });
+
+      const result = await this.scanner.scanChat(chatId, text, connectionId);
+      this.spindle.sendToFrontend({
+        type: 'scan_result',
+        chatId,
+        suggestions: result.suggestions ?? null,
+        error: result.error,
+      });
+    } catch (error) {
+      this.spindle.log.error(`Scan chat failed: ${error}`);
+      this.spindle.sendToFrontend({
+        type: 'scan_result',
+        chatId,
+        suggestions: null,
+        error: String(error),
+      });
+    }
   }
 
   private async handleMergeSuggestions(
